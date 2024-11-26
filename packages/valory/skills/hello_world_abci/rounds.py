@@ -20,7 +20,7 @@
 
 from abc import ABC
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Type, cast
+from typing import Dict, FrozenSet, List, Optional, Tuple, Type, cast
 
 from packages.valory.skills.abstract_round_abci.base import (
     AbciApp,
@@ -35,6 +35,7 @@ from packages.valory.skills.abstract_round_abci.base import (
 )
 from packages.valory.skills.hello_world_abci.payloads import (
     CollectRandomnessPayload,
+    PrintCountPayload,
     PrintMessagePayload,
     RegistrationPayload,
     ResetPayload,
@@ -69,6 +70,11 @@ class SynchronizedData(
             List[str],
             self.db.get_strict("printed_messages"),
         )
+    
+    @property
+    def print_count(self) -> int:
+        """Get the print count."""
+        return cast(int, self.db.get("print_count", default=0))
 
 
 class HelloWorldABCIAbstractRound(AbstractRound, ABC):
@@ -146,7 +152,32 @@ class PrintMessageRound(CollectDifferentUntilAllRound, HelloWorldABCIAbstractRou
             return synchronized_data, Event.DONE
         return None
 
+class PrintCountRound(CollectSameUntilThresholdRound, HelloWorldABCIAbstractRound):
+    """A round that tracks how many times PrintMessageRound has been executed"""
+    
+    payload_class = PrintCountPayload
+    synchronized_data_class = SynchronizedData
+    done_event = Event.DONE
+    none_event = Event.NONE
+    no_majority_event = Event.NO_MAJORITY
+    collection_key = "participant_to_print_count"
+    selection_key = "most_voted_print_count"
 
+    def end_block(self) -> Optional[Tuple[BaseSynchronizedData, Event]]:
+        """Process the end of the block."""
+        if self.threshold_reached:
+            # most_voted_payload directly gives us the int value
+            synchronized_data = self.synchronized_data.update(
+                print_count=self.most_voted_payload,
+                synchronized_data_class=SynchronizedData,
+            )
+            return synchronized_data, Event.DONE
+        if not self.is_majority_possible(
+            self.collection, self.synchronized_data.nb_participants
+        ):
+            return self.synchronized_data, Event.NO_MAJORITY
+        return None
+     
 class ResetAndPauseRound(CollectSameUntilThresholdRound, HelloWorldABCIAbstractRound):
     """A round that represents that consensus is reached (the final round)"""
 
@@ -201,6 +232,9 @@ class HelloWorldAbciApp(AbciApp[Event]):
     """
 
     initial_round_cls: AppState = RegistrationRound
+
+    cross_period_persisted_keys: FrozenSet[str] = frozenset({"print_count"})
+
     transition_function: AbciAppTransitionFunction = {
         RegistrationRound: {
             Event.DONE: CollectRandomnessRound,
@@ -218,7 +252,13 @@ class HelloWorldAbciApp(AbciApp[Event]):
             Event.ROUND_TIMEOUT: RegistrationRound,
         },
         PrintMessageRound: {
+            Event.DONE: PrintCountRound, 
+            Event.ROUND_TIMEOUT: RegistrationRound,
+        },
+        PrintCountRound: {
             Event.DONE: ResetAndPauseRound,
+            Event.NONE: RegistrationRound,
+            Event.NO_MAJORITY: RegistrationRound,
             Event.ROUND_TIMEOUT: RegistrationRound,
         },
         ResetAndPauseRound: {
@@ -231,3 +271,4 @@ class HelloWorldAbciApp(AbciApp[Event]):
         Event.ROUND_TIMEOUT: 30.0,
         Event.RESET_TIMEOUT: 30.0,
     }
+
