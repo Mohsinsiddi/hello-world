@@ -31,4 +31,4 @@ cp $REPO_PATH/keys.json .
 autonomy deploy build -ltm
 
 # Run the deployment
-autonomy deploy run --build-dir abci_build/
+autonomy deploy run --build-dir abci_build_*/
